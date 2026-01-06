@@ -70,6 +70,7 @@ app.get("/health", (req, res) => {
 // API Routes
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/activities", require("./routes/activities"));
+app.use('/api/projects', require("./routes/projects"));
 
 // 404 handler
 app.use(notFound);
