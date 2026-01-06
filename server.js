@@ -37,20 +37,14 @@ app.use(mongoSanitize());
 app.use(xss());
 
 // Rate limiting
-// const limiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: 100, // limit each IP to 100 requests per windowMs
-//   message: 'Too many requests from this IP, please try again later.',
-//   standardHeaders: true,
-//   legacyHeaders: false,
-// });
-
-app.use('/api/', (req, res, next) => {
-  res.status(200).json({
-    success: true,
-    message: 'API is running'
-  });
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 500, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
 });
+app.use('/api/', limiter);
 
 // Stricter rate limit for auth routes
 const authLimiter = rateLimit({
@@ -59,7 +53,6 @@ const authLimiter = rateLimit({
   message: 'Too many login attempts, please try again later.',
   skipSuccessfulRequests: true
 });
-
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', authLimiter);
 
