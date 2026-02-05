@@ -3,6 +3,25 @@ const router = express.Router();
 const User = require('../models/User');
 const { generateToken, protect } = require('../middleware/auth');
 const validator = require('validator');
+const { validatePassword } = require('../utils/passwordValidator');
+
+const getCookieOptions = () => {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  };
+};
+
+const setAuthCookie = (res, token) => {
+  res.cookie('token', token, getCookieOptions());
+};
+
+const clearAuthCookie = (res) => {
+  res.clearCookie('token', getCookieOptions());
+};
 
 // @route   POST /api/auth/register
 // @desc    Register a new user
@@ -26,10 +45,13 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    if (password.length < 8) {
+    // Enhanced password validation
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.isValid) {
       return res.status(400).json({
         success: false,
-        message: 'Password must be at least 8 characters'
+        message: 'Password does not meet security requirements',
+        errors: passwordValidation.errors
       });
     }
 
@@ -51,16 +73,17 @@ router.post('/register', async (req, res) => {
 
     // Generate token
     const token = generateToken(user._id);
+    setAuthCookie(res, token);
 
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
-      token,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        createdAt: user.createdAt
       }
     });
   } catch (error) {
@@ -129,16 +152,17 @@ router.post('/login', async (req, res) => {
 
     // Generate token
     const token = generateToken(user._id);
+    setAuthCookie(res, token);
 
     res.json({
       success: true,
       message: 'Login successful',
-      token,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        createdAt: user.createdAt
       }
     });
   } catch (error) {
@@ -155,9 +179,13 @@ router.post('/login', async (req, res) => {
 // @access  Private
 router.get('/me', protect, async (req, res) => {
   try {
+    const user = await User.findById(req.user._id)
+      .select('-password')
+      .populate('reportingManager', 'name email');
+
     res.json({
       success: true,
-      user: req.user
+      user
     });
   } catch (error) {
     console.error('Get user error:', error);
@@ -213,10 +241,13 @@ router.put('/change-password', protect, async (req, res) => {
       });
     }
 
-    if (newPassword.length < 8) {
+    // Enhanced password validation
+    const passwordValidation = validatePassword(newPassword);
+    if (!passwordValidation.isValid) {
       return res.status(400).json({
         success: false,
-        message: 'New password must be at least 8 characters'
+        message: 'New password does not meet security requirements',
+        errors: passwordValidation.errors
       });
     }
 
@@ -234,11 +265,11 @@ router.put('/change-password', protect, async (req, res) => {
     await user.save();
 
     const token = generateToken(user._id);
+    setAuthCookie(res, token);
 
     res.json({
       success: true,
       message: 'Password changed successfully',
-      token
     });
   } catch (error) {
     console.error('Change password error:', error);
@@ -247,6 +278,17 @@ router.put('/change-password', protect, async (req, res) => {
       message: 'Error changing password'
     });
   }
+});
+
+// @route   POST /api/auth/logout
+// @desc    Logout user
+// @access  Public
+router.post('/logout', (req, res) => {
+  clearAuthCookie(res);
+  res.json({
+    success: true,
+    message: 'Logged out'
+  });
 });
 
 module.exports = router;

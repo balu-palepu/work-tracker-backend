@@ -5,8 +5,10 @@ const helmet = require("helmet");
 const mongoSanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
 const rateLimit = require("express-rate-limit");
+const cookieParser = require("cookie-parser");
 const connectDB = require("./config/database");
 const { errorHandler, notFound } = require("./middleware/errorHandler");
+const { logAuthAttempt, logSuspiciousActivity, logUnauthorizedAccess } = require("./middleware/securityLogger");
 
 // Initialize app
 const app = express();
@@ -22,7 +24,7 @@ app.use(helmet());
 
 // Enable CORS
 const corsOptions = {
-  origin: "*",
+  origin: process.env.CLIENT_URL || "http://localhost:3000",
   credentials: true,
   optionsSuccessStatus: 200,
 };
@@ -31,6 +33,7 @@ app.use(cors(corsOptions));
 // Body parser middleware
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(cookieParser());
 
 // Data sanitization against NoSQL query injection
 app.use(mongoSanitize());
@@ -38,10 +41,13 @@ app.use(mongoSanitize());
 // Data sanitization against XSS
 app.use(xss());
 
+// Security logging middleware
+app.use(logSuspiciousActivity);
+
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 500, // limit each IP to 100 requests per windowMs
+  max: 600, // limit each IP to 600 requests per windowMs
   message: "Too many requests from this IP, please try again later.",
   standardHeaders: true,
   legacyHeaders: false,
@@ -68,12 +74,23 @@ app.get("/health", (req, res) => {
 });
 
 // API Routes
-app.use("/api/auth", require("./routes/auth"));
+app.use("/api/auth", logAuthAttempt, require("./routes/auth"));
+app.use("/api/teams", require("./routes/teams"));
 app.use("/api/activities", require("./routes/activities"));
-app.use('/api/projects', require("./routes/projects"));
+
+// Team-scoped routes
+app.use('/api/teams/:teamId/projects', require("./routes/projects"));
+app.use('/api/teams/:teamId/projects/:projectId/members', require("./routes/projectMembers"));
+app.use('/api/teams/:teamId/projects/:projectId/sprints', require("./routes/sprints"));
+app.use('/api/teams/:teamId/bandwidth', require("./routes/bandwidth"));
+app.use('/api/teams/:teamId/admin', require("./routes/admin"));
+app.use('/api/teams/:teamId/notifications', require("./routes/notifications"));
 
 // 404 handler
 app.use(notFound);
+
+// Log unauthorized access attempts
+app.use(logUnauthorizedAccess);
 
 // Error handler middleware (must be last)
 app.use(errorHandler);
@@ -95,6 +112,10 @@ process.on("uncaughtException", (err) => {
 const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+
+  // Initialize notification schedulers
+  const { initializeSchedulers } = require('./services/notificationScheduler');
+  initializeSchedulers();
 });
 
 module.exports = app;

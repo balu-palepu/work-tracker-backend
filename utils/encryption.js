@@ -72,6 +72,24 @@ class Encryption {
     }
   }
 
+  isEncryptedFormat(value) {
+    if (!value || typeof value !== 'string') return false;
+    const parts = value.split(':');
+    if (parts.length !== 4) return false;
+    const [salt, iv, tag, encrypted] = parts;
+    const isHex = (str) => /^[0-9a-f]+$/i.test(str);
+    return (
+      isHex(salt) &&
+      isHex(iv) &&
+      isHex(tag) &&
+      isHex(encrypted) &&
+      salt.length === SALT_LENGTH * 2 &&
+      iv.length === IV_LENGTH * 2 &&
+      tag.length === TAG_LENGTH * 2 &&
+      encrypted.length > 0
+    );
+  }
+
   // Hash sensitive data (one-way, for comparison only)
   hash(text) {
     return crypto

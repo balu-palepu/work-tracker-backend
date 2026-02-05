@@ -180,7 +180,7 @@ activitySchema.post('findOne', function(doc) {
 function decryptActivityData(doc) {
   if (doc.meetings && doc.meetings.length > 0) {
     doc.meetings.forEach(meeting => {
-      if (meeting.isConfidential && meeting.summary && meeting.summary.includes(':')) {
+      if (meeting.isConfidential && meeting.summary && encryption.isEncryptedFormat(meeting.summary)) {
         meeting.summary = encryption.decrypt(meeting.summary);
       }
     });
@@ -188,7 +188,7 @@ function decryptActivityData(doc) {
   
   if (doc.tasks && doc.tasks.length > 0) {
     doc.tasks.forEach(task => {
-      if (task.isConfidential && task.description && task.description.includes(':')) {
+      if (task.isConfidential && task.description && encryption.isEncryptedFormat(task.description)) {
         task.description = encryption.decrypt(task.description);
       }
     });
