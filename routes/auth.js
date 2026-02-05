@@ -78,6 +78,7 @@ router.post('/register', async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'User registered successfully',
+      token, // Include token for cross-domain deployments
       user: {
         id: user._id,
         name: user.name,
@@ -157,6 +158,7 @@ router.post('/login', async (req, res) => {
     res.json({
       success: true,
       message: 'Login successful',
+      token, // Include token for cross-domain deployments
       user: {
         id: user._id,
         name: user.name,
