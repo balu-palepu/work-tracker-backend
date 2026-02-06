@@ -390,6 +390,17 @@ exports.deleteProject = async (req, res) => {
       });
     }
 
+    // Check if user is the creator or an admin
+    const isCreator = project.createdBy && project.createdBy.toString() === req.user._id.toString();
+    const isAdmin = req.teamMembership?.role === 'admin';
+
+    if (!isCreator && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the project creator or admin can delete this project",
+      });
+    }
+
     // Delete all related data (cascade delete)
     await Promise.all([
       // Delete all project members
