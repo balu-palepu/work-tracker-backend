@@ -56,7 +56,7 @@ const markNotificationsRead = async (userEmail, notificationId = null) => {
         }
       );
 
-      console.log(`\n✅ Marked ${result.modifiedCount} notification(s) as read!`);
+      console.log(`\nMarked ${result.modifiedCount} notification(s) as read!`);
     }
 
     process.exit(0);

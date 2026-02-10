@@ -1,6 +1,7 @@
 const Team = require("../models/Team");
 const TeamMember = require("../models/TeamMember");
 const User = require("../models/User");
+const { maskEmail, canViewFullEmail } = require("../utils/emailSecurity");
 
 /**
  * @desc    Create a new team
@@ -251,10 +252,43 @@ exports.getTeamMembers = async (req, res) => {
       .populate("invitedBy", "name email")
       .sort("-joinedAt");
 
+    // Get viewer's role for email masking
+    const viewerRole = req.teamMembership?.role;
+    const viewerId = req.user._id.toString();
+
+    // Process members to mask emails based on permissions
+    const processedMembers = members.map(member => {
+      const memberObj = member.toObject();
+
+      // Mask user email if viewer is not admin and not viewing their own email
+      if (memberObj.user && memberObj.user.email) {
+        if (!canViewFullEmail(viewerId, memberObj.user._id, viewerRole)) {
+          memberObj.user.email = maskEmail(memberObj.user.email);
+          memberObj.user.emailMasked = true;
+        }
+      }
+
+      // Mask reporting manager email
+      if (memberObj.reportingManager && memberObj.reportingManager.email) {
+        if (!canViewFullEmail(viewerId, memberObj.reportingManager._id, viewerRole)) {
+          memberObj.reportingManager.email = maskEmail(memberObj.reportingManager.email);
+        }
+      }
+
+      // Mask invitedBy email
+      if (memberObj.invitedBy && memberObj.invitedBy.email) {
+        if (!canViewFullEmail(viewerId, memberObj.invitedBy._id, viewerRole)) {
+          memberObj.invitedBy.email = maskEmail(memberObj.invitedBy.email);
+        }
+      }
+
+      return memberObj;
+    });
+
     res.status(200).json({
       success: true,
-      count: members.length,
-      data: members,
+      count: processedMembers.length,
+      data: processedMembers,
     });
   } catch (error) {
     console.error("Get team members error:", error);
@@ -269,11 +303,12 @@ exports.getTeamMembers = async (req, res) => {
 /**
  * @desc    Get available users (users not in team)
  * @route   GET /api/teams/:teamId/available-users
- * @access  Private
+ * @access  Private (Admin only for full emails)
  */
 exports.getAvailableUsers = async (req, res) => {
   try {
     const teamId = req.params.teamId;
+    const viewerRole = req.teamMembership?.role;
 
     // Get all current team member user IDs
     const teamMembers = await TeamMember.find({
@@ -290,10 +325,20 @@ exports.getAvailableUsers = async (req, res) => {
       .select("name email")
       .sort("name");
 
+    // Mask emails for non-admin users
+    const processedUsers = availableUsers.map(user => {
+      const userObj = user.toObject();
+      if (viewerRole !== 'admin' && userObj.email) {
+        userObj.email = maskEmail(userObj.email);
+        userObj.emailMasked = true;
+      }
+      return userObj;
+    });
+
     res.status(200).json({
       success: true,
-      count: availableUsers.length,
-      data: availableUsers,
+      count: processedUsers.length,
+      data: processedUsers,
     });
   } catch (error) {
     console.error("Get available users error:", error);

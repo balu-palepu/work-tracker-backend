@@ -7,6 +7,7 @@ const Sprint = require("../models/Sprint");
 const Activity = require("../models/Activity");
 const BandwidthReport = require("../models/BandwidthReport");
 const ProjectMember = require("../models/ProjectMember");
+const { maskEmail, canViewFullEmail } = require("../utils/emailSecurity");
 
 const isAdminOrProjectManager = (role) =>
   role === "admin" || role === "project_manager";
@@ -187,7 +188,7 @@ exports.getTeamMembers = async (req, res) => {
 
     // Fetch members with pagination
     const members = await TeamMember.find(membersQuery)
-      .populate("user", "name email createdAt reportingManager")
+      .populate("user", "name email createdAt reportingManager loginAttempts lockUntil")
       .populate("reportingManager", "name email")
       .sort(sortObj)
       .skip((page - 1) * limit)
@@ -235,8 +236,39 @@ exports.getTeamMembers = async (req, res) => {
           date: { $gte: thirtyDaysAgo },
         });
 
+        const memberObj = member.toObject();
+
+        // Mask emails for non-admin users
+        if (role !== 'admin' && memberObj.user && memberObj.user.email) {
+          if (!canViewFullEmail(req.user._id.toString(), memberObj.user._id, role)) {
+            memberObj.user.email = maskEmail(memberObj.user.email);
+            memberObj.user.emailMasked = true;
+          }
+        }
+
+        if (role !== 'admin' && memberObj.reportingManager && memberObj.reportingManager.email) {
+          memberObj.reportingManager.email = maskEmail(memberObj.reportingManager.email);
+        }
+
+        // Get lock status (only for admins)
+        const lockStatus = role === 'admin' && member.user ? {
+          isLocked: member.user.lockUntil && member.user.lockUntil > Date.now(),
+          loginAttempts: member.user.loginAttempts || 0,
+          lockUntil: member.user.lockUntil,
+          lockExpiresIn: member.user.lockUntil && member.user.lockUntil > Date.now()
+            ? Math.max(0, Math.round((member.user.lockUntil - Date.now()) / 1000 / 60))
+            : null, // Minutes remaining
+        } : null;
+
+        // Remove sensitive fields from user object
+        if (memberObj.user) {
+          delete memberObj.user.loginAttempts;
+          delete memberObj.user.lockUntil;
+        }
+
         return {
-          ...member.toObject(),
+          ...memberObj,
+          lockStatus,
           stats: {
             assignedTasks,
             completedTasks,
@@ -337,8 +369,20 @@ exports.getProjectStats = async (req, res) => {
           status: "active",
         });
 
+        const projectObj = project.toObject();
+
+        // Mask emails for non-admin users
+        if (role !== 'admin') {
+          if (projectObj.createdBy && projectObj.createdBy.email) {
+            projectObj.createdBy.email = maskEmail(projectObj.createdBy.email);
+          }
+          if (projectObj.teamLead && projectObj.teamLead.email) {
+            projectObj.teamLead.email = maskEmail(projectObj.teamLead.email);
+          }
+        }
+
         return {
-          ...project.toObject(),
+          ...projectObj,
           stats: {
             totalTasks,
             completedTasks,
@@ -424,9 +468,20 @@ exports.getActivityFeed = async (req, res) => {
       .skip((page - 1) * parseInt(limit))
       .limit(parseInt(limit));
 
+    // Process activities to mask emails for non-admin users
+    const processedActivities = activities.map(activity => {
+      const actObj = activity.toObject();
+      if (role !== 'admin' && actObj.user && actObj.user.email) {
+        if (!canViewFullEmail(req.user._id.toString(), actObj.user._id, role)) {
+          actObj.user.email = maskEmail(actObj.user.email);
+        }
+      }
+      return actObj;
+    });
+
     // Group by date for timeline
-    const groupedActivities = activities.reduce((acc, activity) => {
-      const date = activity.date.toISOString().split("T")[0];
+    const groupedActivities = processedActivities.reduce((acc, activity) => {
+      const date = new Date(activity.date).toISOString().split("T")[0];
       if (!acc[date]) {
         acc[date] = [];
       }
@@ -436,12 +491,12 @@ exports.getActivityFeed = async (req, res) => {
 
     res.json({
       success: true,
-      count: activities.length,
+      count: processedActivities.length,
       total: totalCount,
       page: parseInt(page),
       totalPages: Math.ceil(totalCount / parseInt(limit)),
       data: {
-        activities,
+        activities: processedActivities,
         groupedByDate: groupedActivities,
       },
     });
@@ -498,9 +553,15 @@ exports.getProjectManagerView = async (req, res) => {
           date: { $gte: sevenDaysAgo },
         });
 
+        // Mask emails for non-admin users
+        const userObj = report.user.toObject ? report.user.toObject() : { ...report.user };
+        if (role !== 'admin' && userObj.email) {
+          userObj.email = maskEmail(userObj.email);
+        }
+
         return {
           _id: report._id,
-          user: report.user,
+          user: userObj,
           role: report.role,
           joinedAt: report.joinedAt,
           stats: {
@@ -551,8 +612,14 @@ exports.getProjectManagerView = async (req, res) => {
               status: { $in: ["completed", "done"] },
             });
 
+            // Mask emails for non-admin users
+            const userObj = member.user.toObject ? member.user.toObject() : { ...member.user };
+            if (role !== 'admin' && userObj.email) {
+              userObj.email = maskEmail(userObj.email);
+            }
+
             return {
-              user: member.user,
+              user: userObj,
               role: member.role,
               stats: {
                 assignedTasks: memberTasks,
@@ -1025,6 +1092,418 @@ exports.removeMember = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error removing member",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Unlock a user's account (reset login attempts and remove lock)
+ * @route   PUT /api/teams/:teamId/admin/members/:userId/unlock
+ * @access  Private (Admin)
+ */
+exports.unlockAccount = async (req, res) => {
+  try {
+    const { teamId, userId } = req.params;
+
+    // Verify the user is a member of this team
+    const member = await TeamMember.findOne({
+      team: teamId,
+      user: userId,
+    }).populate("user", "name email loginAttempts lockUntil");
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        message: "Team member not found",
+      });
+    }
+
+    // Get the full user record to update lock status
+    const user = await User.findById(userId).select("+loginAttempts +lockUntil");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Check if account is actually locked
+    const wasLocked = user.lockUntil && user.lockUntil > Date.now();
+    const hadAttempts = user.loginAttempts > 0;
+
+    if (!wasLocked && !hadAttempts) {
+      return res.status(400).json({
+        success: false,
+        message: "Account is not locked",
+      });
+    }
+
+    // Reset login attempts and remove lock
+    await user.resetLoginAttempts();
+
+    res.json({
+      success: true,
+      message: wasLocked
+        ? "Account unlocked successfully. User can now log in."
+        : "Login attempts reset successfully.",
+      data: {
+        userId: user._id,
+        name: user.name,
+        wasLocked,
+        previousAttempts: user.loginAttempts,
+      },
+    });
+  } catch (error) {
+    console.error("Unlock account error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error unlocking account",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Get locked accounts in the team
+ * @route   GET /api/teams/:teamId/admin/locked-accounts
+ * @access  Private (Admin)
+ */
+exports.getLockedAccounts = async (req, res) => {
+  try {
+    const { teamId } = req.params;
+
+    // Get all team members
+    const teamMembers = await TeamMember.find({
+      team: teamId,
+      status: "active",
+    }).select("user");
+
+    const userIds = teamMembers.map((m) => m.user);
+
+    // Find locked users among team members
+    const lockedUsers = await User.find({
+      _id: { $in: userIds },
+      $or: [
+        { lockUntil: { $gt: Date.now() } },
+        { loginAttempts: { $gte: 3 } }, // Also show users approaching lock
+      ],
+    }).select("name email loginAttempts lockUntil");
+
+    const formattedUsers = lockedUsers.map((user) => ({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      loginAttempts: user.loginAttempts,
+      isLocked: user.lockUntil && user.lockUntil > Date.now(),
+      lockUntil: user.lockUntil,
+      lockExpiresIn: user.lockUntil
+        ? Math.max(0, Math.round((user.lockUntil - Date.now()) / 1000 / 60))
+        : null, // Minutes remaining
+    }));
+
+    res.json({
+      success: true,
+      count: formattedUsers.length,
+      data: formattedUsers,
+    });
+  } catch (error) {
+    console.error("Get locked accounts error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching locked accounts",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Get team activity history (for admin/manager)
+ * @route   GET /api/teams/:teamId/admin/history
+ * @access  Private (Admin/Manager)
+ */
+exports.getTeamHistory = async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { startDate, endDate, userId, limit = 50, page = 1 } = req.query;
+    const role = req.teamMembership?.role;
+    const scopedUserIds = await getScopedUserIds(teamId, req.user, role);
+
+    // Build query
+    const query = { user: { $in: scopedUserIds } };
+
+    // Filter by specific user if provided
+    if (userId && scopedUserIds.includes(userId)) {
+      query.user = userId;
+    }
+
+    // Filter by date range if provided
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const activities = await Activity.find(query)
+      .populate("user", "name email")
+      .sort({ date: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const total = await Activity.countDocuments(query);
+
+    // Mask emails for non-admin users
+    const processedActivities = activities.map((activity) => {
+      const actObj = activity.toObject();
+      if (role !== "admin" && actObj.user && actObj.user.email) {
+        actObj.user.email = maskEmail(actObj.user.email);
+      }
+      return actObj;
+    });
+
+    res.json({
+      success: true,
+      count: processedActivities.length,
+      total,
+      page: parseInt(page),
+      pages: Math.ceil(total / parseInt(limit)),
+      data: processedActivities,
+    });
+  } catch (error) {
+    console.error("Get team history error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching team history",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Get team statistics (for admin/manager)
+ * @route   GET /api/teams/:teamId/admin/statistics
+ * @access  Private (Admin/Manager)
+ */
+exports.getTeamStatistics = async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { startDate, endDate, userId } = req.query;
+    const role = req.teamMembership?.role;
+    const scopedUserIds = await getScopedUserIds(teamId, req.user, role);
+
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(new Date().setDate(new Date().getDate() - 30));
+    const end = endDate ? new Date(endDate) : new Date();
+
+    // Build query
+    const query = {
+      user: { $in: scopedUserIds },
+      date: { $gte: start, $lte: end },
+    };
+
+    // Filter by specific user if provided
+    if (userId && scopedUserIds.includes(userId)) {
+      query.user = userId;
+    }
+
+    const activities = await Activity.find(query).populate("user", "name");
+
+    const stats = {
+      totalDays: activities.length,
+      totalHours: 0,
+      totalMeetings: 0,
+      totalTasks: 0,
+      avgProductivity: 0,
+      avgHoursPerDay: 0,
+      tasksByStatus: {},
+      tasksByCategory: {},
+      moodDistribution: {},
+    };
+
+    activities.forEach((activity) => {
+      stats.totalHours += activity.totalWorkHours;
+      stats.totalMeetings += activity.meetings.length;
+      stats.totalTasks += activity.tasks.length;
+      stats.avgProductivity += activity.productivity;
+
+      // Count tasks by status
+      activity.tasks.forEach((task) => {
+        stats.tasksByStatus[task.status] =
+          (stats.tasksByStatus[task.status] || 0) + 1;
+        stats.tasksByCategory[task.category] =
+          (stats.tasksByCategory[task.category] || 0) + 1;
+      });
+
+      // Count mood distribution
+      stats.moodDistribution[activity.mood] =
+        (stats.moodDistribution[activity.mood] || 0) + 1;
+    });
+
+    if (activities.length > 0) {
+      stats.avgProductivity = parseFloat(
+        (stats.avgProductivity / activities.length).toFixed(1)
+      );
+      stats.avgHoursPerDay = parseFloat(
+        (stats.totalHours / activities.length).toFixed(2)
+      );
+    }
+
+    res.json({
+      success: true,
+      data: stats,
+    });
+  } catch (error) {
+    console.error("Get team statistics error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching team statistics",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @desc    Get member comparison statistics (for admin/manager)
+ * @route   GET /api/teams/:teamId/admin/comparison
+ * @access  Private (Admin/Manager)
+ */
+exports.getMemberComparison = async (req, res) => {
+  try {
+    const { teamId } = req.params;
+    const { startDate, endDate } = req.query;
+    const role = req.teamMembership?.role;
+    const scopedUserIds = await getScopedUserIds(teamId, req.user, role);
+
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(new Date().setDate(new Date().getDate() - 30));
+    const end = endDate ? new Date(endDate) : new Date();
+
+    // Get team members with their info
+    const teamMembers = await TeamMember.find({
+      team: teamId,
+      user: { $in: scopedUserIds },
+      status: "active",
+    }).populate("user", "name email");
+
+    // Get stats for each member
+    const memberStats = await Promise.all(
+      teamMembers.map(async (member) => {
+        const activities = await Activity.find({
+          user: member.user._id,
+          date: { $gte: start, $lte: end },
+        });
+
+        let totalHours = 0;
+        let totalTasks = 0;
+        let totalMeetings = 0;
+        let totalProductivity = 0;
+        let completedTasks = 0;
+
+        activities.forEach((activity) => {
+          totalHours += activity.totalWorkHours;
+          totalMeetings += activity.meetings.length;
+          totalTasks += activity.tasks.length;
+          totalProductivity += activity.productivity;
+          completedTasks += activity.tasks.filter(
+            (t) => t.status === "completed"
+          ).length;
+        });
+
+        const avgProductivity =
+          activities.length > 0
+            ? parseFloat((totalProductivity / activities.length).toFixed(1))
+            : 0;
+        const avgHoursPerDay =
+          activities.length > 0
+            ? parseFloat((totalHours / activities.length).toFixed(2))
+            : 0;
+        const taskCompletionRate =
+          totalTasks > 0
+            ? parseFloat(((completedTasks / totalTasks) * 100).toFixed(1))
+            : 0;
+
+        // Mask email for non-admin
+        const email =
+          role === "admin"
+            ? member.user.email
+            : maskEmail(member.user.email);
+
+        return {
+          userId: member.user._id,
+          name: member.user.name,
+          email,
+          role: member.role,
+          stats: {
+            activeDays: activities.length,
+            totalHours: parseFloat(totalHours.toFixed(2)),
+            avgHoursPerDay,
+            totalTasks,
+            completedTasks,
+            taskCompletionRate,
+            totalMeetings,
+            avgProductivity,
+          },
+        };
+      })
+    );
+
+    // Sort by total hours worked (descending)
+    memberStats.sort((a, b) => b.stats.totalHours - a.stats.totalHours);
+
+    // Calculate team averages for comparison
+    const teamAverages = {
+      avgHoursPerDay:
+        memberStats.length > 0
+          ? parseFloat(
+              (
+                memberStats.reduce((sum, m) => sum + m.stats.avgHoursPerDay, 0) /
+                memberStats.length
+              ).toFixed(2)
+            )
+          : 0,
+      avgProductivity:
+        memberStats.length > 0
+          ? parseFloat(
+              (
+                memberStats.reduce(
+                  (sum, m) => sum + m.stats.avgProductivity,
+                  0
+                ) / memberStats.length
+              ).toFixed(1)
+            )
+          : 0,
+      avgTaskCompletionRate:
+        memberStats.length > 0
+          ? parseFloat(
+              (
+                memberStats.reduce(
+                  (sum, m) => sum + m.stats.taskCompletionRate,
+                  0
+                ) / memberStats.length
+              ).toFixed(1)
+            )
+          : 0,
+    };
+
+    res.json({
+      success: true,
+      data: {
+        members: memberStats,
+        teamAverages,
+        dateRange: { start, end },
+        memberCount: memberStats.length,
+      },
+    });
+  } catch (error) {
+    console.error("Get member comparison error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching member comparison",
       error: error.message,
     });
   }

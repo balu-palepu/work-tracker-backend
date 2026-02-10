@@ -14,6 +14,11 @@ const {
   getProjectManagerView,
   updateMemberRole,
   removeMember,
+  unlockAccount,
+  getLockedAccounts,
+  getTeamHistory,
+  getTeamStatistics,
+  getMemberComparison,
 } = require("../controllers/adminController");
 const {
   assignTeamLead,
@@ -85,12 +90,29 @@ router.delete(
   requireTeamPermission("MANAGE_TEAM"),
   removeMember,
 );
+router.put(
+  "/members/:userId/unlock",
+  requireTeamPermission("MANAGE_TEAM"),
+  unlockAccount,
+);
+
+// Locked accounts
+router.get(
+  "/locked-accounts",
+  requireTeamPermission("MANAGE_TEAM"),
+  getLockedAccounts,
+);
 
 // Project stats
 router.get("/projects", requireTeamPermission("MANAGE_TEAM"), getProjectStats);
 
 // Activity feed
 router.get("/activity", allowScopedAccess, getActivityFeed);
+
+// Team history and statistics (for admin/manager)
+router.get("/history", allowScopedAccess, getTeamHistory);
+router.get("/statistics", allowScopedAccess, getTeamStatistics);
+router.get("/comparison", allowScopedAccess, getMemberComparison);
 
 // Team lead management
 router.put("/projects/:projectId/team-lead", assignTeamLead);

@@ -26,13 +26,13 @@ const sendTestNotification = async (
         "Example: node send-test-notification.js recipient@gmail.com actor@gmail.com project_assigned",
       );
       console.log("\nAvailable notification types:");
-      console.log("  - task_assigned");
-      console.log("  - task_updated");
-      console.log("  - task_completed");
-      console.log("  - project_assigned");
-      console.log("  - sprint_started");
-      console.log("  - role_changed");
-      console.log("  - team_invite");
+      console.log("task_assigned");
+      console.log("task_updated");
+      console.log("task_completed");
+      console.log("project_assigned");
+      console.log("sprint_started");
+      console.log("role_changed");
+      console.log("team_invite");
       process.exit(1);
     }
 

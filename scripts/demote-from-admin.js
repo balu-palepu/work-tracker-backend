@@ -41,8 +41,8 @@ const demoteFromAdmin = async (email) => {
     console.log(`Email: ${user.email}`);
     console.log(`Role: ${user.role}`);
     console.log("\nThis user can now:");
-    console.log("  • Be assigned to teams");
-    console.log("  • Cannot create new teams");
+    console.log("Be assigned to teams");
+    console.log("Cannot create new teams");
 
     process.exit(0);
   } catch (error) {

@@ -102,6 +102,9 @@ app.use('/api/teams/:teamId/bandwidth', require("./routes/bandwidth"));
 app.use('/api/teams/:teamId/admin', require("./routes/admin"));
 app.use('/api/teams/:teamId/notifications', require("./routes/notifications"));
 
+// Report download routes
+app.use('/api', require("./routes/reports"));
+
 // 404 handler
 app.use(notFound);
 
