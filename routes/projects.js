@@ -17,7 +17,12 @@ const {
   updateTaskStatus,
   addTaskComment,
   assignTeamLead,
-  getProjectsByTeamLead
+  getProjectsByTeamLead,
+  updateProjectWorkflow,
+  getProjectAnalytics,
+  getTaskChildren,
+  getTaskAncestry,
+  getTaskProgress
 } = require('../controllers/projectController');
 
 // All routes require authentication and team context
@@ -38,6 +43,12 @@ router.route('/:id')
 router.put('/:id/team-lead', requireProjectPermission('EDIT_PROJECT'), assignTeamLead);
 router.get('/team-lead/:userId', getProjectsByTeamLead);
 
+// Workflow management
+router.put('/:id/workflow', requireProjectPermission('EDIT_PROJECT'), updateProjectWorkflow);
+
+// Project analytics
+router.get('/:projectId/analytics', getProjectAnalytics);
+
 // Task routes
 router.route('/:projectId/tasks')
   .get(getProjectTasks)
@@ -50,5 +61,8 @@ router.route('/:projectId/tasks/:taskId')
 
 router.patch('/:projectId/tasks/:taskId/status', updateTaskStatus);
 router.post('/:projectId/tasks/:taskId/comments', addTaskComment);
+router.get('/:projectId/tasks/:taskId/children', getTaskChildren);
+router.get('/:projectId/tasks/:taskId/ancestry', getTaskAncestry);
+router.get('/:projectId/tasks/:taskId/progress', getTaskProgress);
 
 module.exports = router;

@@ -54,8 +54,13 @@ app.use(cookieParser());
 // Data sanitization against NoSQL query injection
 app.use(mongoSanitize());
 
-// Data sanitization against XSS
-app.use(xss());
+// Data sanitization against XSS (skip for newsletter content routes to preserve rich HTML)
+app.use((req, res, next) => {
+  if (req.path.includes("/newsletters") && (req.method === "POST" || req.method === "PUT")) {
+    return next();
+  }
+  xss()(req, res, next);
+});
 
 // Security logging middleware
 app.use(logSuspiciousActivity);
@@ -63,7 +68,7 @@ app.use(logSuspiciousActivity);
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 600, // limit each IP to 600 requests per windowMs
+  max: 1000, // limit each IP to 1000 requests per windowMs
   message: "Too many requests from this IP, please try again later.",
   standardHeaders: true,
   legacyHeaders: false,
@@ -101,6 +106,7 @@ app.use('/api/teams/:teamId/projects/:projectId/sprints', require("./routes/spri
 app.use('/api/teams/:teamId/bandwidth', require("./routes/bandwidth"));
 app.use('/api/teams/:teamId/admin', require("./routes/admin"));
 app.use('/api/teams/:teamId/notifications', require("./routes/notifications"));
+app.use('/api/teams/:teamId/newsletters', require("./routes/newsletters"));
 
 // Report download routes
 app.use('/api', require("./routes/reports"));

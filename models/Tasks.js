@@ -11,15 +11,31 @@ const taskSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  // Work item type (ADO/Jira-style)
+  workItemType: {
+    type: String,
+    enum: ['epic', 'feature', 'story', 'task', 'bug', 'subtask'],
+    default: 'task'
+  },
   status: {
     type: String,
-    enum: ['todo', 'inprogress', 'completed'],
     default: 'todo'
   },
   priority: {
     type: String,
     enum: ['low', 'medium', 'high', 'urgent'],
     default: 'medium'
+  },
+  // Completion tracking
+  resolution: {
+    type: String,
+    enum: ['', 'fixed', 'wont_fix', 'duplicate', 'by_design', 'cannot_reproduce'],
+    default: ''
+  },
+  completionReason: {
+    type: String,
+    trim: true,
+    maxlength: [500, 'Completion reason cannot exceed 500 characters']
   },
 
   // Team and project references
@@ -141,14 +157,23 @@ taskSchema.index({ sprint: 1, status: 1 });
 taskSchema.index({ assignedTo: 1 });
 taskSchema.index({ createdBy: 1 });
 taskSchema.index({ team: 1, sprint: 1 });
+taskSchema.index({ project: 1, workItemType: 1 });
+taskSchema.index({ project: 1, parentTask: 1 });
 
-// Update completedAt when status changes to completed
+// Update completedAt when status changes
+// Note: completedAt is now managed by the controller which checks the project's
+// workflow to determine if a status belongs to the 'completed' category.
+// This pre-save hook serves as a fallback for legacy statuses.
 taskSchema.pre('save', function(next) {
   if (this.isModified('status')) {
-    if (this.status === 'completed' && !this.completedAt) {
+    // Legacy status support
+    if (
+      (this.status === 'completed' ||
+        this.status === 'resolved' ||
+        this.status === 'closed') &&
+      !this.completedAt
+    ) {
       this.completedAt = new Date();
-    } else if (this.status !== 'completed') {
-      this.completedAt = null;
     }
   }
   next();

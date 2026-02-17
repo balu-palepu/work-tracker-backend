@@ -7,6 +7,45 @@ const Sprint = require("../models/Sprint");
 const Team = require("../models/Team");
 const { createNotification } = require("./notificationController");
 
+const WORK_ITEM_RANK = {
+  epic: 0,
+  feature: 1,
+  story: 2,
+  task: 3,
+  bug: 3,
+  subtask: 4,
+};
+
+const PARENT_REQUIRED_TYPES = ['subtask'];
+
+const validateParentRelationship = async ({
+  projectId,
+  taskId,
+  parentTaskId,
+  childType,
+}) => {
+  if (!parentTaskId) return null;
+
+  const parent = await Task.findOne({ _id: parentTaskId, project: projectId });
+  if (!parent) {
+    throw new Error("Parent task not found in this project");
+  }
+
+  if (taskId && parent._id.toString() === taskId.toString()) {
+    throw new Error("A task cannot be its own parent");
+  }
+
+  const parentRank = WORK_ITEM_RANK[parent.workItemType] ?? 99;
+  const childRank = WORK_ITEM_RANK[childType] ?? 99;
+  if (parentRank >= childRank) {
+    throw new Error(
+      "Parent item must be a higher-level work item (Epic > Feature > Story > Task/Bug > Subtask)",
+    );
+  }
+
+  return parent;
+};
+
 // @desc    Get all projects for team
 // @route   GET /api/teams/:teamId/projects
 // @access  Private
@@ -142,12 +181,78 @@ exports.createProject = async (req, res) => {
       }
     }
 
+    // Default workflow statuses
+    const defaultWorkflowStatuses = [
+      {
+        id: "todo",
+        label: "To Do",
+        category: "todo",
+        color: "#6B7280",
+        order: 0,
+      },
+      {
+        id: "inprogress",
+        label: "In Progress",
+        category: "inprogress",
+        color: "#3B82F6",
+        order: 1,
+      },
+      {
+        id: "resolved",
+        label: "Completed/Closed",
+        category: "completed",
+        color: "#10B981",
+        order: 2,
+      },
+    ];
+
+    const normalizedWorkflowStatuses = (
+      req.body.settings?.workflowStatuses || defaultWorkflowStatuses
+    )
+      .filter((s) => s.id !== "closed")
+      .map((s, index) => ({
+        ...s,
+        id:
+          s.id === "new"
+            ? "todo"
+            : s.id === "active"
+              ? "inprogress"
+              : s.id === "closed"
+                ? "resolved"
+                : s.id,
+        label:
+          s.id === "new"
+            ? "To Do"
+            : s.id === "active"
+              ? "In Progress"
+              : s.id === "resolved" || s.id === "closed"
+            ? "Completed/Closed"
+            : s.label,
+        order: typeof s.order === "number" ? s.order : index,
+      }));
+
+    // Merge with any provided settings
+    const projectSettings = {
+      ...(req.body.settings || {}),
+      workflowStatuses: normalizedWorkflowStatuses,
+      workItemTypes:
+        req.body.settings?.workItemTypes || [
+          "epic",
+          "feature",
+          "story",
+          "task",
+          "bug",
+          "subtask",
+        ],
+    };
+
     // Create project
     const project = await Project.create({
       ...req.body,
       team: teamId,
       createdBy: req.user._id,
       teamLead: teamLeadId || null,
+      settings: projectSettings,
       // Keep user field for backward compatibility
       user: req.user._id,
     });
@@ -478,10 +583,27 @@ exports.createTask = async (req, res) => {
       });
     }
 
+    const workflowStatuses = project?.settings?.workflowStatuses || [];
+    const defaultStatus = req.body.status || workflowStatuses[0]?.id || "todo";
+
+    const childType = req.body.workItemType || "task";
+    if (PARENT_REQUIRED_TYPES.includes(childType) && !req.body.parentTask) {
+      return res.status(400).json({
+        success: false,
+        message: `A parent item is required for ${childType} work items.`,
+      });
+    }
+
+    await validateParentRelationship({
+      projectId: req.params.projectId,
+      parentTaskId: req.body.parentTask,
+      childType,
+    });
+
     // Get position for new task
     const maxPosition = await Task.findOne({
       project: req.params.projectId,
-      status: req.body.status || "todo",
+      status: defaultStatus,
     }).sort({ position: -1 });
 
     const assignedTo = req.body.assignedTo || null;
@@ -489,6 +611,7 @@ exports.createTask = async (req, res) => {
 
     const task = await Task.create({
       ...req.body,
+      status: defaultStatus,
       assignedTo,
       assignedBy: assignedTo ? req.user._id : undefined,
       project: req.params.projectId,
@@ -499,7 +622,8 @@ exports.createTask = async (req, res) => {
 
     const populatedTask = await Task.findById(task._id)
       .populate("assignedTo", "name email")
-      .populate("createdBy", "name email");
+      .populate("createdBy", "name email")
+      .populate("parentTask", "title workItemType _id");
 
     if (assignedTo) {
       await createNotification({
@@ -560,6 +684,7 @@ exports.getTask = async (req, res) => {
       .populate("assignedTo", "name email")
       .populate("createdBy", "name email")
       .populate("project", "name")
+      .populate("parentTask", "title workItemType _id parentTask")
       .populate("comments.user", "name email");
 
     if (!task) {
@@ -603,6 +728,27 @@ exports.updateTask = async (req, res) => {
     const nextAssignedTo = req.body.assignedTo || null;
     const mentions = Array.isArray(req.body.mentions) ? req.body.mentions : [];
 
+    const effectiveType = req.body.workItemType || task.workItemType || "task";
+    const effectiveParent = Object.prototype.hasOwnProperty.call(req.body, "parentTask")
+      ? req.body.parentTask
+      : task.parentTask;
+
+    if (PARENT_REQUIRED_TYPES.includes(effectiveType) && !effectiveParent) {
+      return res.status(400).json({
+        success: false,
+        message: `A parent item is required for ${effectiveType} work items.`,
+      });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "parentTask")) {
+      await validateParentRelationship({
+        projectId: req.params.projectId,
+        taskId: req.params.taskId,
+        parentTaskId: req.body.parentTask,
+        childType: effectiveType,
+      });
+    }
+
     task = await Task.findByIdAndUpdate(
       req.params.taskId,
       {
@@ -613,7 +759,8 @@ exports.updateTask = async (req, res) => {
       { new: true, runValidators: true },
     )
       .populate("assignedTo", "name email")
-      .populate("createdBy", "name email");
+      .populate("createdBy", "name email")
+      .populate("parentTask", "title workItemType _id");
 
     if (nextAssignedTo && nextAssignedTo !== previousAssignedTo) {
       const project = await Project.findById(task.project);
@@ -659,6 +806,14 @@ exports.updateTask = async (req, res) => {
           }),
         ),
       );
+    }
+
+    // Update sprint metrics if task belongs to a sprint (e.g. story points changed)
+    if (task.sprint) {
+      const sprint = await Sprint.findById(task.sprint);
+      if (sprint && (sprint.status === 'active' || sprint.status === 'planning')) {
+        await sprint.updateMetrics();
+      }
     }
 
     res.json({
@@ -779,7 +934,7 @@ exports.deleteTask = async (req, res) => {
 // @access  Private
 exports.updateTaskStatus = async (req, res) => {
   try {
-    const { status, position } = req.body;
+    const { status, position, resolution, completionReason } = req.body;
 
     const task = await Task.findById(req.params.taskId);
 
@@ -790,12 +945,46 @@ exports.updateTaskStatus = async (req, res) => {
       });
     }
 
+    // Check if the new status belongs to a 'completed' category
+    const project = await Project.findById(task.project);
+    const workflowStatuses = project?.settings?.workflowStatuses || [];
+    const targetStatus = workflowStatuses.find(ws => ws.id === status);
+    const isCompletedCategory = targetStatus?.category === 'completed' ||
+      status === 'completed' || status === 'resolved' || status === 'closed';
+
     task.status = status;
     if (position !== undefined) {
       task.position = position;
     }
 
+    // Handle completion fields
+    if (isCompletedCategory) {
+      if (!completionReason || !completionReason.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Closing comment is required when moving to Completed/Closed",
+        });
+      }
+      if (!task.completedAt) {
+        task.completedAt = new Date();
+      }
+      if (resolution) task.resolution = resolution;
+      task.completionReason = completionReason.trim();
+    } else {
+      task.completedAt = null;
+      task.resolution = '';
+      task.completionReason = '';
+    }
+
     await task.save();
+
+    // Update sprint metrics if task belongs to a sprint
+    if (task.sprint) {
+      const sprint = await Sprint.findById(task.sprint);
+      if (sprint && (sprint.status === 'active' || sprint.status === 'planning')) {
+        await sprint.updateMetrics();
+      }
+    }
 
     const populatedTask = await Task.findById(task._id)
       .populate("assignedTo", "name email")
@@ -936,6 +1125,303 @@ exports.getProjectsByTeamLead = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error fetching projects",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Update project workflow settings
+// @route   PUT /api/teams/:teamId/projects/:id/workflow
+// @access  Private (Project Owner/Manager)
+exports.updateProjectWorkflow = async (req, res) => {
+  try {
+    const { workflowStatuses, workItemTypes } = req.body;
+
+    const project = await Project.findById(req.params.id);
+    if (!project) {
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
+    }
+
+    // Validate workflow statuses
+    if (workflowStatuses) {
+      const normalizedWorkflow = workflowStatuses
+        .filter((s) => s.id !== "closed")
+        .map((s, index) => ({
+          ...s,
+          id:
+            s.id === "new"
+              ? "todo"
+              : s.id === "active"
+                ? "inprogress"
+                : s.id === "closed"
+                  ? "resolved"
+                  : s.id,
+          label:
+            s.id === "new"
+              ? "To Do"
+              : s.id === "active"
+                ? "In Progress"
+                : s.id === "resolved" || s.id === "closed"
+              ? "Completed/Closed"
+              : s.label,
+          order: typeof s.order === "number" ? s.order : index,
+        }));
+
+      // Ensure at least one status per category
+      const categories = new Set(normalizedWorkflow.map((s) => s.category));
+      if (!categories.has('todo') || !categories.has('inprogress') || !categories.has('completed')) {
+        return res.status(400).json({
+          success: false,
+          message: "Workflow must have at least one status in each category (todo, inprogress, completed)",
+        });
+      }
+      // Ensure unique IDs
+      const ids = normalizedWorkflow.map((s) => s.id);
+      if (new Set(ids).size !== ids.length) {
+        return res.status(400).json({
+          success: false,
+          message: "Workflow status IDs must be unique",
+        });
+      }
+      project.settings.workflowStatuses = normalizedWorkflow;
+    }
+
+    if (workItemTypes) {
+      project.settings.workItemTypes = workItemTypes;
+    }
+
+    await project.save();
+
+    res.json({
+      success: true,
+      data: project,
+    });
+  } catch (error) {
+    console.error("Update workflow error:", error);
+    res.status(400).json({
+      success: false,
+      message: "Error updating workflow",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get child tasks for a parent task
+// @route   GET /api/teams/:teamId/projects/:projectId/tasks/:taskId/children
+// @access  Private
+exports.getTaskChildren = async (req, res) => {
+  try {
+    const children = await Task.find({
+      project: req.params.projectId,
+      parentTask: req.params.taskId,
+    })
+      .populate("assignedTo", "name email")
+      .populate("createdBy", "name email")
+      .sort({ position: 1 });
+
+    res.json({
+      success: true,
+      count: children.length,
+      data: children,
+    });
+  } catch (error) {
+    console.error("Get task children error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching child tasks",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get project analytics
+// @route   GET /api/teams/:teamId/projects/:projectId/analytics
+// @access  Private
+exports.getProjectAnalytics = async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    const project = await Project.findById(projectId);
+
+    if (!project) {
+      return res.status(404).json({
+        success: false,
+        message: "Project not found",
+      });
+    }
+
+    // Get all tasks for the project
+    const tasks = await Task.find({ project: projectId });
+
+    // Task count by status
+    const statusCounts = {};
+    tasks.forEach(task => {
+      statusCounts[task.status] = (statusCounts[task.status] || 0) + 1;
+    });
+
+    // Task count by work item type
+    const typeCounts = {};
+    tasks.forEach(task => {
+      const type = task.workItemType || 'task';
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    });
+
+    // Task count by priority
+    const priorityCounts = {};
+    tasks.forEach(task => {
+      priorityCounts[task.priority] = (priorityCounts[task.priority] || 0) + 1;
+    });
+
+    // Sprint velocity (last 5 completed sprints)
+    const completedSprints = await Sprint.find({
+      project: projectId,
+      status: 'completed',
+    })
+      .sort({ actualEndDate: -1 })
+      .limit(5);
+
+    const velocity = completedSprints.map(sprint => ({
+      name: sprint.name,
+      completedPoints: sprint.metrics?.completedStoryPoints || 0,
+      totalPoints: sprint.metrics?.totalStoryPoints || 0,
+      completedTasks: sprint.metrics?.completedTasks || 0,
+    })).reverse();
+
+    // Completed item count
+    const completedTasksCount = tasks.filter((t) => !!t.completedAt).length;
+
+    // Average cycle time (completed tasks with start and completion dates)
+    const completedTasks = tasks.filter(t => t.completedAt && t.startDate);
+    let avgCycleTime = 0;
+    if (completedTasks.length > 0) {
+      const totalCycleTime = completedTasks.reduce((sum, task) => {
+        return sum + (new Date(task.completedAt) - new Date(task.startDate)) / (1000 * 60 * 60 * 24);
+      }, 0);
+      avgCycleTime = Math.round((totalCycleTime / completedTasks.length) * 10) / 10;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalTasks: tasks.length,
+        statusCounts,
+        typeCounts,
+        priorityCounts,
+        velocity,
+        avgCycleTime,
+        completedTasks: completedTasksCount,
+        backlogTasks: tasks.filter((t) => !t.sprint).length,
+      },
+    });
+  } catch (error) {
+    console.error("Get project analytics error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching analytics",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get full ancestry chain for a task (for breadcrumb)
+// @route   GET /api/teams/:teamId/projects/:projectId/tasks/:taskId/ancestry
+// @access  Private
+exports.getTaskAncestry = async (req, res) => {
+  try {
+    const ancestors = [];
+    let currentId = req.params.taskId;
+    const visited = new Set();
+
+    while (currentId && !visited.has(currentId.toString())) {
+      visited.add(currentId.toString());
+      const task = await Task.findById(currentId)
+        .select("title workItemType parentTask _id")
+        .lean();
+      if (!task) break;
+      ancestors.unshift(task);
+      currentId = task.parentTask;
+    }
+
+    res.json({ success: true, data: ancestors });
+  } catch (error) {
+    console.error("Get task ancestry error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching task ancestry",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Get progress rollup for a parent task
+// @route   GET /api/teams/:teamId/projects/:projectId/tasks/:taskId/progress
+// @access  Private
+exports.getTaskProgress = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.projectId);
+    const workflowStatuses = project?.settings?.workflowStatuses || [];
+    const completedStatusIds = workflowStatuses
+      .filter((s) => s.category === "completed")
+      .map((s) => s.id);
+
+    const deep = String(req.query.deep || '').toLowerCase() === 'true';
+
+    let tasksToMeasure = [];
+
+    if (!deep) {
+      tasksToMeasure = await Task.find({
+        project: req.params.projectId,
+        parentTask: req.params.taskId,
+      })
+        .select('status')
+        .lean();
+    } else {
+      const allTasks = await Task.find({ project: req.params.projectId })
+        .select('_id parentTask status')
+        .lean();
+
+      const childrenByParent = new Map();
+      allTasks.forEach((task) => {
+        if (!task.parentTask) return;
+        const parentKey = task.parentTask.toString();
+        if (!childrenByParent.has(parentKey)) {
+          childrenByParent.set(parentKey, []);
+        }
+        childrenByParent.get(parentKey).push(task);
+      });
+
+      const queue = [...(childrenByParent.get(req.params.taskId.toString()) || [])];
+
+      while (queue.length > 0) {
+        const current = queue.shift();
+        tasksToMeasure.push(current);
+        const nested = childrenByParent.get(current._id.toString()) || [];
+        queue.push(...nested);
+      }
+    }
+
+    const total = tasksToMeasure.length;
+    const completed = tasksToMeasure.filter(
+      (task) =>
+        completedStatusIds.includes(task.status) ||
+        ["completed", "resolved", "closed"].includes(task.status),
+    ).length;
+
+    res.json({
+      success: true,
+      data: {
+        total,
+        completed,
+        percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+      },
+    });
+  } catch (error) {
+    console.error("Get task progress error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching task progress",
       error: error.message,
     });
   }

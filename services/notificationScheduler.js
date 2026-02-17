@@ -74,7 +74,7 @@ const scheduleBandwidthReminders = () => {
 const scheduleTaskReminders = () => {
   // Run daily at 10:00 AM
   cron.schedule('0 10 * * *', async () => {
-    console.log('Running daily task reminders...');
+    console.log('Running daily overdue task reminders...');
 
     try {
       const Task = require('../models/Tasks');
@@ -84,34 +84,108 @@ const scheduleTaskReminders = () => {
       // Find tasks that are due today or overdue and not completed
       const overdueTasks = await Task.find({
         dueDate: { $lte: currentDate },
-        status: { $ne: 'completed' },
-        assignee: { $exists: true }
-      }).populate('assignee', 'name email')
+        status: { $nin: ['completed', 'resolved', 'closed', 'done'] },
+        assignedTo: { $exists: true, $ne: null }
+      }).populate('assignedTo', 'name email')
         .populate('project', 'name')
         .populate('team', 'name');
 
       for (const task of overdueTasks) {
-        if (task.assignee && task.team) {
+        if (task.assignedTo && task.team) {
           await createNotification({
-            recipient: task.assignee._id,
+            recipient: task.assignedTo._id,
             team: task.team._id,
             type: 'task_reminder',
             title: 'Overdue Task',
-            message: `Task "${task.title}" in ${task.project.name} is overdue. Please update the status.`,
+            message: `Task "${task.title}" in ${task.project?.name || 'your project'} is overdue. Please update the status.`,
             relatedTask: task._id,
-            relatedProject: task.project._id,
-            actionUrl: `/teams/${task.team._id}/projects/${task.project._id}`
+            relatedProject: task.project?._id,
+            actionUrl: `/teams/${task.team._id}/projects/${task.project?._id}`
           });
         }
       }
 
-      console.log(`Sent ${overdueTasks.length} task reminders`);
+      console.log(`Sent ${overdueTasks.length} overdue task reminders`);
     } catch (error) {
-      console.error('Error sending task reminders:', error);
+      console.error('Error sending overdue task reminders:', error);
     }
   });
 
-  console.log('Daily task reminder scheduler initialized (Every day at 10:00 AM)');
+  console.log('Daily overdue task reminder scheduler initialized (Every day at 10:00 AM)');
+};
+
+/**
+ * Send daily task reminders to all users with incomplete tasks
+ * Runs at 2:00 PM and 5:00 PM local server time
+ */
+const scheduleDailyTaskReminders = () => {
+  const sendReminders = async (label) => {
+    console.log(`Running ${label} daily task reminders...`);
+
+    try {
+      const Task = require('../models/Tasks');
+
+      // Find all incomplete tasks that are assigned to someone
+      const incompleteTasks = await Task.find({
+        status: { $nin: ['completed', 'resolved', 'closed', 'done'] },
+        assignedTo: { $exists: true, $ne: null }
+      }).populate('assignedTo', 'name email')
+        .populate('project', 'name')
+        .populate('team', 'name');
+
+      // Group tasks by user+team so we send one notification per user per team
+      const userTaskMap = {};
+      for (const task of incompleteTasks) {
+        if (!task.assignedTo || !task.team) continue;
+        const key = `${task.assignedTo._id}_${task.team._id}`;
+        if (!userTaskMap[key]) {
+          userTaskMap[key] = {
+            userId: task.assignedTo._id,
+            userName: task.assignedTo.name,
+            teamId: task.team._id,
+            teamName: task.team.name,
+            tasks: []
+          };
+        }
+        userTaskMap[key].tasks.push(task);
+      }
+
+      let sentCount = 0;
+      for (const entry of Object.values(userTaskMap)) {
+        const taskCount = entry.tasks.length;
+        const highPriorityCount = entry.tasks.filter(t => t.priority === 'urgent' || t.priority === 'high').length;
+
+        let message = `You have ${taskCount} pending task${taskCount > 1 ? 's' : ''}`;
+        if (highPriorityCount > 0) {
+          message += ` (${highPriorityCount} high priority)`;
+        }
+        message += '. Please review and update your progress.';
+
+        await createNotification({
+          recipient: entry.userId,
+          team: entry.teamId,
+          type: 'task_reminder',
+          title: 'Daily Task Reminder',
+          message,
+          actionUrl: `/teams/${entry.teamId}`
+        });
+
+        sentCount++;
+      }
+
+      console.log(`${label}: Sent daily task reminders to ${sentCount} users`);
+    } catch (error) {
+      console.error(`Error sending ${label} daily task reminders:`, error);
+    }
+  };
+
+  // 2:00 PM every day
+  cron.schedule('0 14 * * *', () => sendReminders('2 PM'));
+
+  // 5:00 PM every day
+  cron.schedule('0 17 * * *', () => sendReminders('5 PM'));
+
+  console.log('Daily task reminder scheduler initialized (2:00 PM and 5:00 PM)');
 };
 
 /**
@@ -133,6 +207,7 @@ const initializeSchedulers = () => {
 
   scheduleBandwidthReminders();
   scheduleTaskReminders();
+  scheduleDailyTaskReminders();
 
   console.log('All notification schedulers initialized successfully');
 };
@@ -186,5 +261,6 @@ module.exports = {
   initializeSchedulers,
   sendImmediateBandwidthReminders,
   scheduleBandwidthReminders,
-  scheduleTaskReminders
+  scheduleTaskReminders,
+  scheduleDailyTaskReminders
 };

@@ -72,6 +72,19 @@ const projectSchema = new mongoose.Schema({
     requireEstimates: {
       type: Boolean,
       default: false
+    },
+    // Custom workflow statuses
+    workflowStatuses: [{
+      id: { type: String, required: true },
+      label: { type: String, required: true },
+      category: { type: String, enum: ['todo', 'inprogress', 'completed'], required: true },
+      color: { type: String, default: '#6B7280' },
+      order: { type: Number, default: 0 }
+    }],
+    // Enabled work item types for this project
+    workItemTypes: {
+      type: [String],
+      default: ['epic', 'feature', 'story', 'task', 'bug', 'subtask']
     }
   },
 

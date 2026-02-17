@@ -21,7 +21,9 @@ const setAuthCookie = (res, token) => {
 };
 
 const clearAuthCookie = (res) => {
-  res.clearCookie('token', getCookieOptions());
+  const { maxAge, ...clearCookieOptions } = getCookieOptions();
+  void maxAge;
+  res.clearCookie('token', clearCookieOptions);
 };
 
 // @route   POST /api/auth/register
