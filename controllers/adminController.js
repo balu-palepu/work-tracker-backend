@@ -10,7 +10,7 @@ const ProjectMember = require("../models/ProjectMember");
 const { maskEmail, canViewFullEmail } = require("../utils/emailSecurity");
 
 const isAdminOrProjectManager = (role) =>
-  role === "admin" || role === "project_manager";
+  role === "admin" || role === "project_manager" || role === "Manager";
 
 const getScopedUserIds = async (teamId, requester, role) => {
   if (isAdminOrProjectManager(role)) {
@@ -188,7 +188,7 @@ exports.getTeamMembers = async (req, res) => {
 
     // Fetch members with pagination
     const members = await TeamMember.find(membersQuery)
-      .populate("user", "name email createdAt reportingManager loginAttempts lockUntil")
+      .populate("user", "name email createdAt reportingManager customTitle loginAttempts lockUntil")
       .populate("reportingManager", "name email")
       .sort(sortObj)
       .skip((page - 1) * limit)

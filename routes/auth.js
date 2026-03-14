@@ -5,6 +5,7 @@ const User = require('../models/User');
 const { generateToken, protect } = require('../middleware/auth');
 const validator = require('validator');
 const { validatePassword } = require('../utils/passwordValidator');
+const TeamMember = require('../models/TeamMember');
 
 const getCookieOptions = () => {
   const isProd = process.env.NODE_ENV === 'production';
@@ -31,7 +32,8 @@ const clearAuthCookie = (res) => {
 // @access  Public
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, customTitle, speciality, specialty } = req.body;
+    const resolvedTitle = customTitle || speciality || specialty || '';
 
     // Validation
     if (!name || !email || !password) {
@@ -71,7 +73,8 @@ router.post('/register', async (req, res) => {
     const user = await User.create({
       name,
       email,
-      password
+      password,
+      customTitle: resolvedTitle || undefined
     });
 
     // Generate token
@@ -86,6 +89,7 @@ router.post('/register', async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        customTitle: user.customTitle || '',
         role: user.role,
         createdAt: user.createdAt
       }
@@ -166,6 +170,7 @@ router.post('/login', async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        customTitle: user.customTitle || '',
         role: user.role,
         createdAt: user.createdAt
       }
@@ -206,17 +211,29 @@ router.get('/me', protect, async (req, res) => {
 // @access  Private
 router.put('/update-profile', protect, async (req, res) => {
   try {
-    const { name, email } = req.body;
+    const { name, email, customTitle, speciality, specialty } = req.body;
+    const resolvedTitle =
+      customTitle !== undefined
+        ? customTitle
+        : (speciality !== undefined ? speciality : specialty);
 
     const updateData = {};
     if (name) updateData.name = name;
     if (email && validator.isEmail(email)) updateData.email = email;
+    if (resolvedTitle !== undefined) updateData.customTitle = resolvedTitle || '';
 
     const user = await User.findByIdAndUpdate(
       req.user._id,
       updateData,
       { new: true, runValidators: true }
     );
+
+    if (resolvedTitle !== undefined) {
+      await TeamMember.updateMany(
+        { user: req.user._id, status: 'active' },
+        { $set: { customTitle: resolvedTitle || '' } }
+      );
+    }
 
     res.json({
       success: true,

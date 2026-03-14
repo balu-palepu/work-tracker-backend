@@ -33,6 +33,11 @@ const userSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
+  customTitle: {
+    type: String,
+    trim: true,
+    maxlength: [100, 'Custom title cannot exceed 100 characters']
+  },
   isActive: {
     type: Boolean,
     default: true

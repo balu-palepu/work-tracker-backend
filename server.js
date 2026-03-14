@@ -9,7 +9,6 @@ const cookieParser = require("cookie-parser");
 const connectDB = require("./config/database");
 const { errorHandler, notFound } = require("./middleware/errorHandler");
 const { logAuthAttempt, logSuspiciousActivity, logUnauthorizedAccess } = require("./middleware/securityLogger");
-
 // Initialize app
 const app = express();
 
@@ -54,11 +53,13 @@ app.use(cookieParser());
 // Data sanitization against NoSQL query injection
 app.use(mongoSanitize());
 
-// Data sanitization against XSS (skip for newsletter content routes to preserve rich HTML)
+// Data sanitization against XSS (skip for routes that contain rich HTML content)
 app.use((req, res, next) => {
-  if (req.path.includes("/newsletters") && (req.method === "POST" || req.method === "PUT")) {
-    return next();
-  }
+  const isRichHtmlRoute = (
+    req.path.includes("/newsletters") ||
+    req.path.includes("/catalog")
+  ) && (req.method === "POST" || req.method === "PUT");
+  if (isRichHtmlRoute) return next();
   xss()(req, res, next);
 });
 
@@ -107,6 +108,9 @@ app.use('/api/teams/:teamId/bandwidth', require("./routes/bandwidth"));
 app.use('/api/teams/:teamId/admin', require("./routes/admin"));
 app.use('/api/teams/:teamId/notifications', require("./routes/notifications"));
 app.use('/api/teams/:teamId/newsletters', require("./routes/newsletters"));
+app.use('/api/teams/:teamId/catalog', require("./routes/projectCatalog"));
+app.use('/api/teams/:teamId/announcements', require("./routes/announcements"));
+app.use('/api/teams/:teamId/resources', require("./routes/resources"));
 
 // Report download routes
 app.use('/api', require("./routes/reports"));

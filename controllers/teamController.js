@@ -247,7 +247,7 @@ exports.getTeamMembers = async (req, res) => {
       team: req.params.teamId,
       status: "active",
     })
-      .populate("user", "name email createdAt reportingManager")
+      .populate("user", "name email createdAt reportingManager customTitle")
       .populate("reportingManager", "name email")
       .populate("invitedBy", "name email")
       .sort("-joinedAt");
@@ -357,7 +357,8 @@ exports.getAvailableUsers = async (req, res) => {
  */
 exports.addTeamMember = async (req, res) => {
   try {
-    const { userId, email, role, customTitle, reportingManagerId } = req.body;
+    const { userId, email, role, customTitle, speciality, specialty, reportingManagerId } = req.body;
+    const resolvedTitle = customTitle !== undefined ? customTitle : (speciality !== undefined ? speciality : specialty);
     const teamId = req.params.teamId;
 
     // Find user by userId or email
@@ -396,7 +397,7 @@ exports.addTeamMember = async (req, res) => {
         // Reactivate membership
         existingMember.status = "active";
         existingMember.role = role || "member";
-        existingMember.customTitle = customTitle;
+        if (resolvedTitle !== undefined) existingMember.customTitle = resolvedTitle;
         if (reportingManagerId !== undefined) {
           existingMember.reportingManager = reportingManagerId || null;
         }
@@ -407,10 +408,13 @@ exports.addTeamMember = async (req, res) => {
         if (reportingManagerId !== undefined) {
           user.reportingManager = reportingManagerId || null;
         }
+        if (resolvedTitle !== undefined) {
+          user.customTitle = resolvedTitle || "";
+        }
         if (role) {
           user.role = role === "admin" ? "admin" : "user";
         }
-        if (reportingManagerId !== undefined || role) {
+        if (reportingManagerId !== undefined || role || resolvedTitle !== undefined) {
           await user.save();
         }
 
@@ -428,7 +432,7 @@ exports.addTeamMember = async (req, res) => {
       user: user._id,
       role: role || "member",
       status: "active",
-      customTitle,
+      customTitle: resolvedTitle,
       reportingManager: reportingManagerId || null,
       invitedBy: req.user._id,
       joinedAt: new Date(),
@@ -437,15 +441,18 @@ exports.addTeamMember = async (req, res) => {
     if (reportingManagerId !== undefined) {
       user.reportingManager = reportingManagerId || null;
     }
+    if (resolvedTitle !== undefined) {
+      user.customTitle = resolvedTitle || "";
+    }
     if (role) {
       user.role = role === "admin" ? "admin" : "user";
     }
-    if (reportingManagerId !== undefined || role) {
+    if (reportingManagerId !== undefined || role || resolvedTitle !== undefined) {
       await user.save();
     }
 
     // Populate user data
-    await member.populate("user", "name email");
+    await member.populate("user", "name email customTitle");
     await member.populate("reportingManager", "name email");
 
     res.status(201).json({
@@ -471,7 +478,8 @@ exports.addTeamMember = async (req, res) => {
 exports.updateTeamMember = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { role, customTitle, reportingManagerId } = req.body;
+    const { role, customTitle, speciality, specialty, reportingManagerId } = req.body;
+    const resolvedTitle = customTitle !== undefined ? customTitle : (speciality !== undefined ? speciality : specialty);
 
     // Find membership
     const member = await TeamMember.findOne({
@@ -499,7 +507,7 @@ exports.updateTeamMember = async (req, res) => {
 
     // Update role and custom title
     if (role) member.role = role;
-    if (customTitle !== undefined) member.customTitle = customTitle;
+    if (resolvedTitle !== undefined) member.customTitle = resolvedTitle;
     if (reportingManagerId !== undefined) {
       member.reportingManager = reportingManagerId || null;
     }
@@ -507,6 +515,9 @@ exports.updateTeamMember = async (req, res) => {
     await member.save();
 
     const userUpdates = {};
+    if (resolvedTitle !== undefined) {
+      userUpdates.customTitle = resolvedTitle || "";
+    }
     if (reportingManagerId !== undefined) {
       userUpdates.reportingManager = reportingManagerId || null;
     }
